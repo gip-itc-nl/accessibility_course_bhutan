@@ -1,4 +1,4 @@
-########################################
+#########################################
 # Cost accumulation mapping in R
 #
 # Andy Nelson. Professor, Spatial Agriculture and Food Security
@@ -25,11 +25,13 @@
 #     and housing information that allows fine-grain match of population with travel time
 #     zones.
 ########################################
-
 # call the required libraries (packages)
-library(raster)
-library(gdistance)
-library(rgdal)
+if (!require("raster"))
+  install.packages("raster")
+if (!require("gdistance"))
+  install.packages("gdistance")
+if (!require("rgdal"))
+  install.packages("rgdal")
 
 ##########################################################################################
 # A function we will need to test which OS we have:
@@ -66,7 +68,8 @@ rasterOptions(chunksize=1e+06)
 
 ##########################################################################################
 # set the working directory
-setwd(filepath("/users/radeby/R_projects/accessibility/Bhutan_clean"))
+setwd(filepath("C:\\UT\\Work\\Workspace\\CSI\\accessibility_course_bhutan-master"))
+
 
 ##########################################################################################
 
@@ -93,9 +96,11 @@ country_template
 # elevation raster
 bhutan_dem_srtm <- raster(filepath("inputs/bhutan_dem_srtm.tif"))
 bhutan_dem_srtm
+plot(bhutan_dem_srtm, main="DTM")
 
 # calculate the slope using the elevation in each point of the map
 bhutan_dem_srtm_slope <- terrain(bhutan_dem_srtm, opt='slope', unit='degrees')
+#plot(bhutan_dem_srtm_slope)
 
 # write the raster with slope
 writeRaster(bhutan_dem_srtm_slope, filename=filepath("processing/bhutan_srtm_slope.tif"),
@@ -104,14 +109,16 @@ writeRaster(bhutan_dem_srtm_slope, filename=filepath("processing/bhutan_srtm_slo
 # landcover raster
 landcover <- raster(filepath("inputs/landcover2010.tif"))
 landcover
+plot(landcover, main="land cover classes")
 
 # target localities for accessibility; here we have chosen 23 hospitals
 targets <- readOGR(filepath("inputs/bhu_facilities_point.shp"))
 # transform targets also to the crs of the country raster template
 targets <- spTransform(targets, crs(country_template))
 targets
+plot(targets, main="location of 23 hospitals")
 
-# reproject landcover and elevation rasters
+# reproject landcover and elevation rasters to national Bhutan metric system and resample to 150m 
 landcover_reprojected <- projectRaster(landcover, country_template, 
        crs = '+init=EPSG:5266', res = 150)
 
@@ -130,7 +137,7 @@ slope_reprojected
 # Landcover -  reclassify the landcover classes into walking speeds (km/h)
 #  values >= 0 and < 1 become 1, values >= 1 and < 2 become 3, etc.
 #  do not use speed = 0 km/hr for rather obvious reasons
-# See example data file, csv must be a 5-column (id,from,to,becomes,descrip[tion) file,
+# See example data file, csv must be a 5-column (id,from,to,becomes,description) file,
 # from which we immediately drop the description.
 lcs = read.table("inputs/landcover_class_speeds.csv", 
                  colClasses=c("integer","integer","integer","numeric","character"), 
@@ -143,6 +150,7 @@ lcs
 landcover_speed <- reclassify(landcover_reprojected,lcs,right=FALSE)
 writeRaster(landcover_speed, filename=filepath("processing/landcover_speed.tif"), 
             format="GTiff", overwrite=TRUE)
+plot(landcover_speed, main="speed in km per hour over land cover classes")
 
 ##########################################################################################
 # Step 5
@@ -163,16 +171,19 @@ writeRaster(slp_walk/6.0, filename=filepath("processing/sloped_factor_walking.ti
 terrain_walk_spd <- landcover_speed * slp_walk/6.0
 writeRaster(terrain_walk_spd, filename=filepath("processing/terrain_walk_speed.tif"), 
             format="GTiff", overwrite=TRUE)
-            
+plot(terrain_walk_spd, main="slope adjusted walking speed")        
+
 ##########################################################################################
 # Step 6
 
 # slope for car driving
 # Experimental Tobler's car speed is given by W = 50e^-2.4|tan(slope)+0.12|
 # Original -2.4 gave far too much decay.
+# copyright R de By
 slp_car <-  50 * exp(-0.4 * abs(tan(slope_reprojected*pi/180) + 0.12))
 writeRaster(slp_car, filename=filepath("processing/sloped_cardrive.tif"), 
             format="GTiff", overwrite=TRUE)
+plot(slp_car, main="slope adjusted car speed")        
 
 # read the road network shapefile; in this version, we use OSM
 # The integer64 option is required or values will be read as strings and handled as
@@ -181,12 +192,14 @@ road_shp <- readOGR(filepath("inputs/osm_roads.shp"),integer64="allow.loss")
 # transform to crs of the country raster template
 road_shp <- spTransform(road_shp, crs(country_template))
 road_shp
+plot(road_shp,main="roads")
 
 # Our footpaths current version are not good.
 footpath_shp <- readOGR(filepath("inputs/footpaths.shp"))
 # transform to the crs of the country raster template
 footpath_shp <- spTransform(footpath_shp, crs(country_template))
 footpath_shp
+plot(footpath_shp,main="footpaths")
 
 # create an empty raster for road speed
 road_spd <- raster()
@@ -207,9 +220,10 @@ road_spd
 footpath_spd
 
 # assign raster cell values using the maxspeed field for roads
-road_spd <- rasterize(x=road_shp,y=road_spd,field="maxspeed",fun=max)
-writeRaster(road_spd, filename=filepath("processing/road_speed.tif"), 
-            format="GTiff", overwrite=TRUE)
+#road_spd <- rasterize(x=road_shp,y=road_spd,field="maxspeed",fun=max)
+#writeRaster(road_spd, filename=filepath("processing/road_speed.tif"), 
+#            format="GTiff", overwrite=TRUE)
+road_spd <- raster(filepath("processing/road_speed.tif"))
 road_spd
 
 # assign raster cell values using the maxspeed field for footpaths
@@ -225,10 +239,12 @@ footpath_spd
 ##########################################################################################
 
 # if slope needs to be in play for road and footpaths speeds, here is where that happens
+# we are dividing by the base speed for walking (5kmph) and road (50kmph)
 sloped_footpath_spd <- footpath_spd * slp_walk / 5.0
 sloped_road_spd <- road_spd * slp_car / 50.0
 writeRaster(sloped_road_spd, filename=filepath("processing/sloped_road_speed.tif"), 
             format="GTiff", overwrite=TRUE)
+plot(sloped_road_spd)                
 
 ##########################################################################################
 # Step 7
@@ -246,7 +262,8 @@ writeRaster(road_network_spd, filename=filepath("processing/road_network_speed.t
 merged_spd <- merge(road_network_spd,terrain_walk_spd)
 writeRaster(merged_spd, filename=filepath("processing/merged_speed.tif"), 
             format="GTiff", overwrite=TRUE)
-                
+plot(merged_spd, main="merged speed rasters in kmph") 
+
 ##########################################################################################
 # Step 8
 
@@ -255,6 +272,7 @@ writeRaster(merged_spd, filename=filepath("processing/merged_speed.tif"),
 friction <- 1.0 / (merged_spd * 1000 / 60.0 )
 writeRaster(friction, filename=filepath("processing/friction.tif"), 
             format="GTiff", overwrite=TRUE)
+plot(friction, main="friction layer reporting time in minutes to travel one metre") 
 
 ##########################################################################################
 # Step 9
@@ -266,7 +284,7 @@ T <- transition(friction, function(x) 1/mean(x), 8)
 # between pixels.
 # FALSE OBSERVATION: In Bhutan case, the next line is not needed as we are already having
 # metric rasters at 150m resolution.
-# CORRECT OBSERVATION: GC is also needed when directions 4 (see gdistance documentation)
+# CORRECT OBSERVATION: GC is also needed when directions = 8 or 16 (see gdistance documentation)
 T.GC <- geoCorrection(T,type="c")
 
 # accumulated cost calculation to the nearest target using the geo-corrected graph and 
@@ -275,6 +293,8 @@ access_mins <- accCost(T.GC, targets)
 # write the resulting raster showing time in minutes to the nearest target
 writeRaster(access_mins, filename=filepath("outputs/access_mins.tif"), 
             format="GTiff", overwrite=TRUE)
+plot(access_mins, main="travel time in minutes to nearest hospital")
+plot(targets, add=TRUE)
 
 ##########################################################################################
 
@@ -313,7 +333,7 @@ writeRaster(accCost_minID, filename=filepath("outputs/accCost_minid.tif"), forma
 
 # make a new raster based on minimum value and compare to raster from section 4.5 (should 
 # be the same)
-accCost_min <- min(accCost_stack)
+#accCost_min <- min(accCost_stack)
 
 # make a reclass table to assign target IDs to layer IDs.
 m <- c(1, 2, targets@data$gid[1])
@@ -329,10 +349,16 @@ accCost_zones <- reclassify(accCost_minID,rclcA,right=FALSE)
 accCost_zones <- mask(accCost_zones,landcover_reprojected)
 writeRaster(accCost_zones, filename=filepath("outputs/access_alloc.tif"), format="GTiff",
    overwrite=TRUE)
+
+# convert access zones to polygons, commented out here due to time constraints in webinar
+#accCost_polys <- rasterToPolygons(accCost_zones, fun=NULL, n=4, na.rm=TRUE, digits=12, dissolve=TRUE)
+#writeOGR(accCost_polys, "outputs", "alloc_polys", driver="ESRI Shapefile") 
+#plot(accCost_polys, add=TRUE)
+
 # write minimum access to file and compare to output from 4.5 - should be identical
-accCost_min <- mask(accCost_min,landcover_reprojected)
-writeRaster(accCost_min, filename=filepath("outputs/access_minimum.tif"), format="GTiff",
-   overwrite=TRUE)
+#accCost_min <- mask(accCost_min,landcover_reprojected)
+#writeRaster(accCost_min, filename=filepath("outputs/access_minimum.tif"), format="GTiff",
+#   overwrite=TRUE)
 
 ##########################################################################################
 # Population data
