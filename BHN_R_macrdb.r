@@ -33,6 +33,10 @@ if (!require("gdistance"))
 if (!require("rgdal"))
   install.packages("rgdal")
 
+library(raster)
+library(gdistance)
+library(rgdal)
+
 ##########################################################################################
 # A function we will need to test which OS we have:
 get_os <- function(){
@@ -69,7 +73,6 @@ rasterOptions(chunksize=1e+06)
 ##########################################################################################
 # set the working directory
 setwd(filepath("C:\\UT\\Work\\Workspace\\CSI\\accessibility_course_bhutan-master"))
-
 
 ##########################################################################################
 
@@ -179,7 +182,6 @@ plot(terrain_walk_spd, main="slope adjusted walking speed")
 # slope for car driving
 # Experimental Tobler's car speed is given by W = 50e^-2.4|tan(slope)+0.12|
 # Original -2.4 gave far too much decay.
-# copyright R de By
 slp_car <-  50 * exp(-0.4 * abs(tan(slope_reprojected*pi/180) + 0.12))
 writeRaster(slp_car, filename=filepath("processing/sloped_cardrive.tif"), 
             format="GTiff", overwrite=TRUE)
@@ -297,68 +299,73 @@ plot(access_mins, main="travel time in minutes to nearest hospital")
 plot(targets, add=TRUE)
 
 ##########################################################################################
-
+# Step 10
 # Compute cost allocation to map which pixel is closest to which target
-# derived from https:#stat.ethz.ch/pipermail/r-sig-geo/2011-July/012208.html
-# no function for this so ... make a stack of accumulated cost rasters, one per target
-# and then use the minimum pixel value through the stack to identify which pixel 
-# is closest to which target
 
-# set up an initial stack with two layers, use existing data to fill it for now
-accCost_stack <- stack(access_mins,access_mins)
-# run accumulative cost for each target (targets from shapefile (3 columns, [ID X Y])
-for(i in 1:length(targets)) {
-  # grab the X and Y coord 
-  t  <- cbind(targets@coords[i,1],targets@coords[i,2])
-  # add accumulated cost to the stack
-  accCost_stack <- stack(accCost_stack, accCost(T.GC, t))
+# Author: Jacob van Etten jacobvanetten@yahoo.com
+# Bioversity International
+# Date :  May 2018
+# Version 1.0
+# Licence GPL v3
+costCatchments <- function(x, fromCoords)
+{
+  fromCoords <- .coordsToMatrix(fromCoords) 
+  fromCells <- cellFromXY(x, fromCoords)
+  if(!all(!is.na(fromCells))){
+    warning("some coordinates not found and omitted")
+    fromCells <- fromCells[!is.na(fromCells)]
+  }
+  tr <- transitionMatrix(x)
+  tr <- rbind(tr,rep(0,nrow(tr)))
+  tr <- cbind(tr,rep(0,nrow(tr)))
+  
+  startNode <- nrow(tr) #extra node to serve as origin
+  adjP <- cbind(rep(startNode, times=length(fromCells)), fromCells)
+  
+  tr[adjP] <- Inf
+  
+  adjacencyGraph <- graph.adjacency(tr, mode="directed", weighted=TRUE)
+  E(adjacencyGraph)$weight <- 1/E(adjacencyGraph)$weight		
+  
+  shortestPaths <- shortest_paths(adjacencyGraph, from=startNode, mode="out")$vpath
+  #origin is cell number
+  origin <- unlist(lapply(shortestPaths, function(x) {ifelse(length(x)>1, x[2], x[1])}))[-startNode]
+  #origin is row number in fromCoords
+  
+  result <- as(x, "RasterLayer")
+  result <- setValues(result, origin)	
+  return(result)
 }
-# remove the first two layers which have dud info, were just there (8 lines above) to 
-# obtain a raster stack with as many rasters as we have targets
-accCost_stack <- dropLayer(accCost_stack,1:2)
 
-# make a new raster based on the layer ID (pixel values will be from 1 to n layers)
-# Original code had just which.min(accCost_stack) *but this assigns the ID code of one
-# target shed to the (no data) area outside of study space too*.  In current understanding,
-# this is a flaw of which.min (or possibly deriving from a raster stack feed with not 
-# quite robust data).  Hence, an extra step with a mask operator.
-# Original code line:
-accCost_minID <- which.min(accCost_stack)
-
-# and next, mask out area outside of study; we use landcover_reprojected but this could be
-# any proper raster with appropriate nodata delineation.
-accCost_minID <- mask(accCost_minID,landcover_reprojected)
-writeRaster(accCost_minID, filename=filepath("outputs/accCost_minid.tif"), format="GTiff",
-   overwrite=TRUE)
-
-# make a new raster based on minimum value and compare to raster from section 4.5 (should 
-# be the same)
-#accCost_min <- min(accCost_stack)
-
-# make a reclass table to assign target IDs to layer IDs.
-m <- c(1, 2, targets@data$gid[1])
-for(i in 2:length(targets)) {
-  m <- c(m,i, i+1, targets@data$gid[i])
+.coordsToMatrix <- function(Coords)
+{
+  if(class(Coords) == "numeric")
+  {
+    if(length(Coords) == 2) {Coords <- t(as.matrix(Coords))} 
+    else{stop("coordinates given as a vector, but the vector does not have a length of two")}
+  }
+  
+  if(class(Coords) == "matrix")
+  {
+    if(!(ncol(Coords) == 2)){stop("coordinates given as a matrix, but the matrix does not have two columns")}
+  }	
+  
+  if(inherits(Coords, "SpatialPoints"))  
+  {
+    Coords <- coordinates(Coords)
+  }
+  return(Coords)
 }
-rclcA <- matrix(m, ncol=3, byrow=TRUE)
-# apply the reclassification to get allocation zone IDs 
-# - THIS IS THE COST ALLOCATION ZONE MAP
-accCost_zones <- reclassify(accCost_minID,rclcA,right=FALSE)
 
-# mask and write cost allocation to file
+# generate cost catchments  around each target
+accCost_zones <- costCatchments(T.GC, targets)
+# mask and write cost catchments to file
 accCost_zones <- mask(accCost_zones,landcover_reprojected)
 writeRaster(accCost_zones, filename=filepath("outputs/access_alloc.tif"), format="GTiff",
-   overwrite=TRUE)
+            overwritTRUE)
 
-# convert access zones to polygons, commented out here due to time constraints in webinar
-#accCost_polys <- rasterToPolygons(accCost_zones, fun=NULL, n=4, na.rm=TRUE, digits=12, dissolve=TRUE)
-#writeOGR(accCost_polys, "outputs", "alloc_polys", driver="ESRI Shapefile") 
-#plot(accCost_polys, add=TRUE)
-
-# write minimum access to file and compare to output from 4.5 - should be identical
-#accCost_min <- mask(accCost_min,landcover_reprojected)
-#writeRaster(accCost_min, filename=filepath("outputs/access_minimum.tif"), format="GTiff",
-#   overwrite=TRUE)
+plot(accCost_zones, main="catchments around each hospital")
+plot(targets, add=TRUE)
 
 ##########################################################################################
 # Population data
